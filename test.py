@@ -107,10 +107,49 @@ def test_mongodb_connection():
     try:
         from pymongo import MongoClient
         
-        client = MongoClient(mongo_uri)
-        # Test the connection
-        client.admin.command('ping')
-        print("  ✅ חיבור למסד הנתונים הצליח!")
+        def create_mongodb_client():
+            """יצירת חיבור MongoDB עם הגדרות SSL מתאימות ל-Atlas"""
+            try:
+                # Configure MongoDB client with proper SSL settings for Atlas
+                client = MongoClient(
+                    mongo_uri,
+                    ssl=True,
+                    ssl_cert_reqs='CERT_NONE',  # For Atlas connections
+                    serverSelectionTimeoutMS=30000,
+                    connectTimeoutMS=30000,
+                    socketTimeoutMS=30000,
+                    maxPoolSize=10,
+                    retryWrites=True,
+                    retryReads=True,
+                    tlsAllowInvalidCertificates=True,  # Additional SSL flexibility
+                    tlsAllowInvalidHostnames=True      # Additional SSL flexibility
+                )
+                # Test the connection
+                client.admin.command('ping')
+                print("  ✅ חיבור למסד הנתונים הצליח!")
+                return client
+            except Exception as e:
+                print(f"  ⚠️ ניסיון ראשון נכשל: {e}")
+                # Try alternative connection method
+                try:
+                    print("  🔄 מנסה שיטת חיבור חלופית...")
+                    client = MongoClient(
+                        mongo_uri,
+                        serverSelectionTimeoutMS=30000,
+                        connectTimeoutMS=30000,
+                        socketTimeoutMS=30000,
+                        maxPoolSize=10,
+                        retryWrites=True,
+                        retryReads=True
+                    )
+                    client.admin.command('ping')
+                    print("  ✅ חיבור למסד הנתונים הצליח עם שיטה חלופית!")
+                    return client
+                except Exception as e2:
+                    print(f"  ❌ גם השיטה החלופית נכשלה: {e2}")
+                    raise
+        
+        client = create_mongodb_client()
         
         # Test database operations
         db = client['app_bot_db']

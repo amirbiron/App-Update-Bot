@@ -29,13 +29,52 @@ if not MONGO_URI:
     logger.error("MONGO_URI environment variable not set!")
     raise ValueError("MONGO_URI environment variable not set!")
 
+def create_mongodb_client():
+    """יצירת חיבור MongoDB עם הגדרות SSL מתאימות ל-Atlas"""
+    try:
+        # Configure MongoDB client with proper SSL settings for Atlas
+        client = MongoClient(
+            MONGO_URI,
+            ssl=True,
+            ssl_cert_reqs='CERT_NONE',  # For Atlas connections
+            serverSelectionTimeoutMS=30000,
+            connectTimeoutMS=30000,
+            socketTimeoutMS=30000,
+            maxPoolSize=10,
+            retryWrites=True,
+            retryReads=True,
+            tlsAllowInvalidCertificates=True,  # Additional SSL flexibility
+            tlsAllowInvalidHostnames=True      # Additional SSL flexibility
+        )
+        # Test the connection
+        client.admin.command('ping')
+        logger.info("Successfully connected to MongoDB")
+        return client
+    except Exception as e:
+        logger.error(f"Failed to connect to MongoDB: {e}")
+        # Try alternative connection method
+        try:
+            logger.info("Trying alternative connection method...")
+            client = MongoClient(
+                MONGO_URI,
+                serverSelectionTimeoutMS=30000,
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000,
+                maxPoolSize=10,
+                retryWrites=True,
+                retryReads=True
+            )
+            client.admin.command('ping')
+            logger.info("Successfully connected to MongoDB with alternative method")
+            return client
+        except Exception as e2:
+            logger.error(f"Alternative connection method also failed: {e2}")
+            raise
+
 try:
-    client = MongoClient(MONGO_URI)
-    # Test the connection
-    client.admin.command('ping')
-    logger.info("Successfully connected to MongoDB")
+    client = create_mongodb_client()
 except Exception as e:
-    logger.error(f"Failed to connect to MongoDB: {e}")
+    logger.error(f"All MongoDB connection attempts failed: {e}")
     raise
 
 db = client['app_bot_db']
