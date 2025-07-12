@@ -10,6 +10,8 @@ from flask import Flask, request
 from telegram.error import Forbidden, BadRequest
 import pymongo
 import math
+from werkzeug.serving import make_server
+import threading
 
 # --- Setup ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -26,17 +28,12 @@ if not all([TOKEN, MONGO_URI, SECRET_KEY, APP_URL]):
     exit()
 
 REQUEST_HEADER = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
 }
 APPS_PER_PAGE = 8
 APPS_TO_TRACK = {
     "WhatsApp": {"rss": "https://www.apkmirror.com/apk/whatsapp-inc/whatsapp/feed/", "package": "com.whatsapp"},
     "Telegram": {"rss": "https://www.apkmirror.com/apk/telegram-fz-llc/telegram/feed/", "package": "org.telegram.messenger"},
-    "Gemini": {"rss": "https://www.apkmirror.com/apk/google-inc/google-gemini/feed/", "package": "com.google.android.apps.bard"},
-    "X (Twitter)": {"rss": "https://www.apkmirror.com/apk/twitter-inc/twitter/feed/", "package": "com.twitter.android"},
-    "Google Keep": {"rss": "https://www.apkmirror.com/apk/google-inc/keep/feed/", "package": "com.google.android.keep"},
 }
 SORTED_APPS = sorted(APPS_TO_TRACK.keys())
 
@@ -49,7 +46,6 @@ seen_versions = {app: "" for app in APPS_TO_TRACK}
 
 ptb_app = Application.builder().token(TOKEN).build()
 flask_app = Flask(__name__)
-main_loop = None # Will hold the running asyncio event loop
 
 # --- UI & Bot Logic Functions ---
 def build_app_menu(chat_id, page):
@@ -106,22 +102,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 async def check_for_updates(app: Application):
-    global seen_versions
-    logger.info("Running scheduled update check...")
-    # (Full logic for checking updates and sending messages goes here)
+    # Full logic for checking updates and sending messages goes here
     pass
 
 # --- Flask Endpoints ---
 @flask_app.route(f"/{TOKEN}", methods=["POST"])
 def respond():
-    """Endpoint to receive updates from Telegram."""
-    if main_loop:
-        try:
-            update = Update.de_json(request.get_json(force=True), ptb_app.bot)
-            # Submit the coroutine to the running event loop from the sync thread
-            asyncio.run_coroutine_threadsafe(ptb_app.update_queue.put(update), main_loop)
-        except Exception as e:
-            logger.error(f"Error processing update: {e}")
+    update = Update.de_json(request.get_json(force=True), ptb_app.bot)
+    ptb_app.update_queue.put_nowait(update)
     return "ok"
 
 @flask_app.route("/trigger-update-check")
@@ -131,22 +119,32 @@ def trigger_update_check():
         return "Update check triggered."
     return "Unauthorized", 401
 
-# --- PTB Setup ---
-async def main_setup():
-    """Initializes the bot and sets the webhook."""
-    await ptb_app.initialize()
-    webhook_url = f"{APP_URL}/{TOKEN}"
-    await ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
-    logger.info(f"Webhook set to {webhook_url}")
-    # The dispatcher runs in the background, processing updates from the queue
-    asyncio.create_task(ptb_app.start())
-
+# --- PTB Handlers ---
 ptb_app.add_error_handler(error_handler)
 ptb_app.add_handler(CommandHandler("start", start_command))
 ptb_app.add_handler(CallbackQueryHandler(navigation_callback, pattern="^nav:"))
 ptb_app.add_handler(CallbackQueryHandler(toggle_subscription_callback, pattern="^(add|remove):"))
 
-# --- Run Setup when Gunicorn starts ---
-if __name__ != "__main__":
-    main_loop = asyncio.get_event_loop()
-    main_loop.create_task(main_setup())
+# --- Main Entry Point ---
+async def main():
+    """Initializes the bot, sets the webhook, and starts everything."""
+    await ptb_app.initialize()
+    webhook_url = f"{APP_URL}/{TOKEN}"
+    await ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
+    logger.info(f"Webhook set to {webhook_url}")
+
+    # Create a separate thread for the Flask server
+    server = make_server('0.0.0.0', 8080, flask_app)
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    logger.info("Flask server started in a background thread.")
+
+    # Run the PTB application in the main thread
+    await ptb_app.start()
+    
+    # Keep the main thread alive
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
