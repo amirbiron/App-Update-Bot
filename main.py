@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Bot for monitoring app updates with a MongoDB subscription system.
-Final version using a simple asyncio.sleep loop for stability.
+Final version using the robust async context manager for application lifecycle.
 """
 
 import os
@@ -56,7 +56,7 @@ def remove_subscriber(chat_id: int) -> bool:
         return True
     return False
 
-# --- פקודות הבוט ---
+# --- פקודות הבוט שיפעילו המשתמשים ---
 
 async def start_command(update, context: ContextTypes.DEFAULT_TYPE):
     if add_subscriber(update.message.chat_id):
@@ -89,48 +89,38 @@ class AppUpdateMonitor:
         return version_match.group(1) if version_match else "Unknown"
 
     async def check_apps_and_notify(self):
-        logger.info("Background task: Starting app update check cycle...")
         for app_name, rss_url in self.rss_feeds.items():
             try:
                 feed = feedparser.parse(rss_url)
                 if not feed.entries: continue
-
                 latest_entry = feed.entries[0]
                 current_version = self.extract_version(latest_entry.title)
                 last_version = self.last_updates.get(app_name, "none")
-
                 if current_version != "Unknown" and current_version != last_version:
                     logger.info(f"New update found for {app_name}: {current_version}")
-                    
                     emoji = self.app_emojis.get(app_name, '📱')
                     message = f"🚨 {emoji} עדכון חדש באפליקציית {app_name}!\n\n📦 **{latest_entry.title}**\n🔢 גרסה: {current_version}\n\n🔗 [להורדה מ-APKMirror]({latest_entry.link})"
-                    
                     subscribers = get_all_subscribers()
                     for chat_id in subscribers:
                         try:
-                            await self.bot.send_message(
-                                chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True
-                            )
+                            await self.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
                         except Forbidden:
                             logger.warning(f"User {chat_id} blocked the bot. Removing.")
                             remove_subscriber(chat_id)
                         except TelegramError as e:
                             logger.error(f"Failed to send message to {chat_id}: {e}")
-                    
                     self.last_updates[app_name] = current_version
-            
             except Exception as e:
                 logger.error(f"Error processing {app_name}: {e}")
     
     async def run_check_loop(self):
-        """הלולאה האינסופית שמריצה את הבדיקות ברקע"""
-        # המתנה קצרה בהתחלה לפני הבדיקה הראשונה
         await asyncio.sleep(10)
         while True:
             await self.check_apps_and_notify()
             logger.info("Background task: Check cycle complete. Sleeping for 1 hour.")
-            await asyncio.sleep(3600) # המתנה של שעה
+            await asyncio.sleep(3600)
 
+# --- הפונקציה הראשית שמחברת הכל ---
 async def main():
     """הפונקציה הראשית שמאתחלת ומריצה את הבוט"""
     bot_token = os.getenv('BOT_TOKEN')
@@ -144,17 +134,25 @@ async def main():
     application.add_handler(CommandHandler('subscribe', start_command))
     application.add_handler(CommandHandler('unsubscribe', unsubscribe_command))
 
-    # יצירת מופע של המנטר והרצת לולאת הבדיקה שלו כ-task ברקע
-    monitor = AppUpdateMonitor(application.bot)
-    asyncio.create_task(monitor.run_check_loop())
-
-    # הרצת הבוט כדי שיאזין לפקודות
-    logger.info("Starting bot, listening for commands...")
-    await application.run_polling()
+    # --- הדרך הנכונה לניהול מחזור החיים של האפליקציה ---
+    # שימוש ב-async with מבטיח ש-initialize ו-shutdown יופעלו כראוי
+    async with application:
+        await application.initialize()  # אתחול הבוט
+        await application.updater.start_polling()  # התחלת האזנה להודעות
+        
+        # יצירה והרצה של משימת הרקע לבדיקת עדכונים
+        monitor = AppUpdateMonitor(application.bot)
+        # שימוש ב-create_task כדי שהלולאה תרוץ ברקע ולא תחסום
+        application.create_task(monitor.run_check_loop(), name="UpdateChecker")
+        
+        # לולאה אינסופית שמחזיקה את התוכנית הראשית בחיים
+        # עד לקבלת אות עצירה (כמו Ctrl+C)
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped gracefully")
 
