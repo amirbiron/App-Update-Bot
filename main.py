@@ -1,94 +1,130 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Telegram Bot for monitoring app updates
-בוט טלגרם למעקב אחר עדכוני אפליקציות
+Telegram Bot for monitoring app updates with a subscription system
+בוט טלגרם למעקב אחר עדכוני אפליקציות עם מערכת הרשמה
 """
 
 import os
 import time
 import asyncio
 import logging
-from datetime import datetime
-from typing import Dict, List, Optional
+import json
+from typing import Dict, Optional, Set
+
 import feedparser
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import TelegramError, Forbidden
+from telegram.ext import ApplicationBuilder, CommandHandler
 
-# Setup logging
+# --- הגדרות ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+# חשוב! זהו הנתיב לקובץ המנויים. נסביר בהמשך למה הוא מוגדר כך עבור Render.
+SUBSCRIBERS_FILE = '/data/subscribers.json'
+
+# --- פונקציות לניהול מנויים ---
+
+def load_subscribers() -> Set[int]:
+    """טעינת מזהי המנויים מהקובץ"""
+    if not os.path.exists(SUBSCRIBERS_FILE):
+        return set()
+    try:
+        with open(SUBSCRIBERS_FILE, 'r') as f:
+            data = json.load(f)
+            return set(data.get('subscribers', []))
+    except (json.JSONDecodeError, FileNotFoundError):
+        return set()
+
+def save_subscribers(subscribers: Set[int]):
+    """שמירת מזהי המנויים לקובץ"""
+    # יצירת התיקייה אם היא לא קיימת
+    os.makedirs(os.path.dirname(SUBSCRIBERS_FILE), exist_ok=True)
+    with open(SUBSCRIBERS_FILE, 'w') as f:
+        json.dump({'subscribers': list(subscribers)}, f)
+
+# --- פקודות הבוט ---
+
+async def start_command(update, context):
+    """מטפל בפקודות /start ו /subscribe"""
+    chat_id = update.message.chat_id
+    subscribers = load_subscribers()
+    
+    if chat_id not in subscribers:
+        subscribers.add(chat_id)
+        save_subscribers(subscribers)
+        logger.info(f"New subscriber added: {chat_id}")
+        await update.message.reply_text("✅ נרשמת בהצלחה לקבלת עדכונים!")
+    else:
+        await update.message.reply_text("🤔 אתה כבר רשום לקבלת עדכונים.")
+
+async def unsubscribe_command(update, context):
+    """מטפל בפקודת /unsubscribe"""
+    chat_id = update.message.chat_id
+    subscribers = load_subscribers()
+
+    if chat_id in subscribers:
+        subscribers.remove(chat_id)
+        save_subscribers(subscribers)
+        logger.info(f"Subscriber removed: {chat_id}")
+        await update.message.reply_text("🗑️ הסרנו אותך מרשימת התפוצה. לא תקבל יותר עדכונים.")
+    else:
+        await update.message.reply_text("🤔 לא היית רשום מלכתחילה.")
+
+# --- לוגיקת מעקב העדכונים (כמעט ללא שינוי, מלבד שליחת ההודעות) ---
+
 class AppUpdateMonitor:
-    def __init__(self, bot_token: str, chat_id: str):
-        self.bot = Bot(token=bot_token)
-        self.chat_id = chat_id
-        self.last_updates = {}  # אחסון העדכון האחרון של כל אפליקציה
-        
-        # RSS feeds for monitoring
+    def __init__(self, bot: Bot):
+        self.bot = bot
+        self.last_updates = {}
         self.rss_feeds = {
             'WhatsApp': 'https://www.apkmirror.com/apk/whatsapp-inc/whatsapp/feed/',
             'Telegram': 'https://www.apkmirror.com/apk/telegram-fz-llc/telegram/feed/',
             'Instagram': 'https://www.apkmirror.com/apk/instagram/instagram-instagram/feed/'
         }
-        
-        # אמוג'י לכל אפליקציה
         self.app_emojis = {
-            'WhatsApp': '💬',
-            'Telegram': '✈️',
-            'Instagram': '📸'
+            'WhatsApp': '💬', 'Telegram': '✈️', 'Instagram': '📸'
         }
-    
+
     def parse_rss_feed(self, app_name: str, rss_url: str) -> Optional[Dict]:
-        """קריאת RSS feed והחזרת העדכון האחרון"""
         try:
             feed = feedparser.parse(rss_url)
-            
             if not feed.entries:
                 logger.warning(f"No entries found for {app_name}")
                 return None
-            
-            # העדכון האחרון
             latest_entry = feed.entries[0]
-            
             return {
-                'app_name': app_name,
-                'title': latest_entry.title,
-                'link': latest_entry.link,
-                'published': latest_entry.published,
-                'summary': getattr(latest_entry, 'summary', ''),
+                'app_name': app_name, 'title': latest_entry.title,
+                'link': latest_entry.link, 'published': latest_entry.published,
                 'version': self.extract_version(latest_entry.title)
             }
-            
         except Exception as e:
             logger.error(f"Error parsing RSS for {app_name}: {e}")
             return None
-    
+
     def extract_version(self, title: str) -> str:
-        """חילוץ מספר גרסה מכותרת"""
-        # דוגמה: "WhatsApp 2.23.24.14 APK" -> "2.23.24.14"
         import re
         version_match = re.search(r'(\d+\.\d+\.\d+(?:\.\d+)?)', title)
         return version_match.group(1) if version_match else "Unknown"
-    
+
     def is_new_update(self, app_name: str, current_update: Dict) -> bool:
-        """בדיקה אם יש עדכון חדש"""
-        if app_name not in self.last_updates:
-            return True
-        
-        last_version = self.last_updates[app_name].get('version', '')
+        last_version = self.last_updates.get(app_name, {}).get('version', '')
         current_version = current_update.get('version', '')
-        
-        return current_version != last_version
-    
-    async def send_update_notification(self, update_info: Dict):
-        """שליחת התראה על עדכון חדש"""
+        return current_version != "Unknown" and current_version != last_version
+
+    async def send_update_to_all(self, update_info: Dict):
+        """שליחת התראה לכל המנויים"""
+        subscribers = load_subscribers()
+        if not subscribers:
+            logger.info("No subscribers to notify.")
+            return
+
         app_name = update_info['app_name']
         emoji = self.app_emojis.get(app_name, '📱')
-        
         message = f"""
 🚨 {emoji} עדכון חדש באפליקציית {app_name}!
 
@@ -97,118 +133,80 @@ class AppUpdateMonitor:
 📅 תאריך: {update_info['published']}
 
 🔗 [להורדה מ-APKMirror]({update_info['link']})
-
----
-מעקב אוטומטי של בוט עדכוני אפליקציות 🤖
         """.strip()
-        
-        try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode='Markdown',
-                disable_web_page_preview=True
-            )
-            logger.info(f"Sent notification for {app_name} version {update_info['version']}")
-            
-        except TelegramError as e:
-            logger.error(f"Failed to send message: {e}")
-    
-    async def check_all_apps(self):
-        """בדיקת כל האפליקציות לעדכונים"""
-        logger.info("Starting app update check cycle...")
-        
-        for app_name, rss_url in self.rss_feeds.items():
-            logger.info(f"Checking {app_name}...")
-            
-            # קריאת RSS feed
-            current_update = self.parse_rss_feed(app_name, rss_url)
-            
-            if not current_update:
-                continue
-            
-            # בדיקה אם יש עדכון חדש
-            if self.is_new_update(app_name, current_update):
-                logger.info(f"New update found for {app_name}: {current_update['version']}")
-                
-                # שליחת התראה
-                await self.send_update_notification(current_update)
-                
-                # שמירת העדכון האחרון
-                self.last_updates[app_name] = current_update
-            else:
-                logger.info(f"No new update for {app_name}")
-            
-            # המתנה קצרה בין בדיקות
-            await asyncio.sleep(5)
-        
-        logger.info("App update check cycle completed")
-    
-    async def send_startup_message(self):
-        """שליחת הודעת התחלה"""
-        startup_message = """
-🤖 **בוט מעקב עדכוני אפליקציות פעיל!**
 
-📱 אפליקציות במעקב:
-• WhatsApp 💬
-• Telegram ✈️
-• Instagram 📸
-
-⏰ בדיקת עדכונים כל שעה
-🔔 תקבלו התראה מיידית על עדכונים חדשים
-
----
-הבוט מוכן לעבודה! 🚀
-        """.strip()
+        logger.info(f"Sending notification for {app_name} to {len(subscribers)} subscribers.")
         
-        try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=startup_message,
-                parse_mode='Markdown'
-            )
-        except TelegramError as e:
-            logger.error(f"Failed to send startup message: {e}")
-    
-    async def run_monitor(self):
-        """הרצת הבוט הראשית"""
-        logger.info("Starting App Update Monitor Bot...")
-        
-        # שליחת הודעת התחלה
-        await self.send_startup_message()
-        
-        # לולאה אינסופית לבדיקת עדכונים
-        while True:
+        # לולאה על כל המנויים ושליחת הודעה
+        for chat_id in list(subscribers): # יצירת עותק כדי שנוכל לשנות את המקורי
             try:
-                await self.check_all_apps()
-                
-                # המתנה של שעה לבדיקה הבאה
-                logger.info("Waiting 1 hour for next check...")
-                await asyncio.sleep(3600)  # 60 * 60 = 3600 שניות = שעה
-                
-            except Exception as e:
-                logger.error(f"Error in monitor loop: {e}")
-                await asyncio.sleep(300)  # המתנה של 5 דקות במקרה של שגיאה
+                await self.bot.send_message(
+                    chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True
+                )
+            except Forbidden:
+                # המשתמש חסם את הבוט, נסיר אותו מהרשימה
+                logger.warning(f"User {chat_id} blocked the bot. Removing from subscribers.")
+                subscribers.remove(chat_id)
+                save_subscribers(subscribers)
+            except TelegramError as e:
+                logger.error(f"Failed to send message to {chat_id}: {e}")
+            await asyncio.sleep(0.1) # כדי לא להציף את ה-API של טלגרם
 
-def main():
-    """פונקציה ראשית"""
-    # קבלת משתני סביבה
+    async def check_all_apps_loop(self):
+        """לולאת המעקב הראשית"""
+        while True:
+            logger.info("Starting app update check cycle...")
+            for app_name, rss_url in self.rss_feeds.items():
+                current_update = self.parse_rss_feed(app_name, rss_url)
+                if not current_update:
+                    continue
+                
+                if self.is_new_update(app_name, current_update):
+                    logger.info(f"New update found for {app_name}: {current_update['version']}")
+                    await self.send_update_to_all(current_update)
+                    self.last_updates[app_name] = current_update
+                else:
+                    logger.info(f"No new update for {app_name}")
+                await asyncio.sleep(5)
+            
+            logger.info("Waiting 1 hour for next check...")
+            await asyncio.sleep(3600)
+
+async def main():
+    """הפונקציה הראשית שמריצה הכל"""
     bot_token = os.getenv('BOT_TOKEN')
-    chat_id = os.getenv('CHAT_ID')
-    
-    if not bot_token or not chat_id:
-        logger.error("Missing BOT_TOKEN or CHAT_ID environment variables")
+    if not bot_token:
+        logger.error("Missing BOT_TOKEN environment variable")
         return
+
+    # בניית אפליקציית הבוט
+    application = ApplicationBuilder().token(bot_token).build()
+
+    # רישום הפקודות
+    application.add_handler(CommandHandler('start', start_command))
+    application.add_handler(CommandHandler('subscribe', start_command)) # כינוי נוסף
+    application.add_handler(CommandHandler('unsubscribe', unsubscribe_command))
+
+    # יצירת והרצת לולאת המעקב כרקע
+    monitor = AppUpdateMonitor(application.bot)
+    asyncio.create_task(monitor.check_all_apps_loop())
     
-    # יצירת הבוט והרצתו
-    monitor = AppUpdateMonitor(bot_token, chat_id)
-    
+    # שליחת הודעת התחלה (אופציונלי, אפשר להסיר אם לא רוצים)
+    await application.bot.send_message(
+        chat_id=os.getenv('ADMIN_CHAT_ID'), # שולח הודעת אתחול רק למנהל
+        text="🤖 בוט עדכונים עם מערכת הרשמה פעיל!"
+    )
+
+    # הרצת הבוט (מקשיב לפקודות)
+    logger.info("Starting bot polling...")
+    await application.run_polling()
+
+
+if __name__ == "__main__":
     try:
-        asyncio.run(monitor.run_monitor())
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
 
-if __name__ == "__main__":
-    main()
