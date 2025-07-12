@@ -1,5 +1,5 @@
-python-telegram-bot==21.11
+python-telegram-bot[job-queue]==21.1.1
 feedparser==6.0.11
+pymongo[srv]==4.7.3
 requests==2.31.0
 python-dateutil==2.8.2
-pymongo[srv]==4.7.3
