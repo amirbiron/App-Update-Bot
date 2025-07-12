@@ -4,36 +4,33 @@ from bs4 import BeautifulSoup
 import time
 import os
 from telegram import Update
+from telegram.error import Forbidden
 from telegram.ext import Application, CommandHandler, ContextTypes
+import pymongo
 
 # --- Configuration ---
 TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+MONGO_URI = os.environ.get("MONGO_URI")
+
+# --- Database Setup ---
+try:
+    client = pymongo.MongoClient(MONGO_URI)
+    db = client.get_database("AppUpdateBotDB") # You can name your database
+    user_collection = db.get_collection("users")
+    # Create an index to avoid duplicate chat_ids
+    user_collection.create_index("chat_id", unique=True)
+    logger.info("Successfully connected to MongoDB.")
+except Exception as e:
+    logger.error(f"Could not connect to MongoDB: {e}")
+    # Exit if we can't connect to the DB, as the bot is useless without it
+    exit()
+
 
 APPS_TO_TRACK = {
     "WhatsApp": "https://www.apkmirror.com/apk/whatsapp-inc/whatsapp/feed/",
     "Telegram": "https://www.apkmirror.com/apk/telegram-fz-llc/telegram/feed/",
+    # ... add all your other apps here ...
     "Instagram": "https://www.apkmirror.com/apk/instagram/instagram/feed/",
-    "Google Maps": "https://www.apkmirror.com/apk/google-inc/maps/feed/",
-    "Gmail": "https://www.apkmirror.com/apk/google-inc/gmail/feed/",
-    "YouTube": "https://www.apkmirror.com/apk/google-inc/youtube/feed/",
-    "GBWhatsApp": "https://www.apkmirror.com/apk/gbwhatsapp/gbwhatsapp/feed/",
-    "Waze": "https://www.apkmirror.com/apk/waze/waze-gps-maps-traffic-alerts-live-navigation/feed/",
-    "Google Chrome": "https://www.apkmirror.com/apk/google-inc/chrome/feed/",
-    "Viber": "https://www.apkmirror.com/apk/viber-media-s-a-r-l/viber/feed/",
-    "TikTok": "https://www.apkmirror.com/apk/tiktok-pte-ltd/tiktok/feed/",
-    "Spotify": "https://www.apkmirror.com/apk/spotify-ltd/spotify-music/feed/",
-    "Netflix": "https://www.apkmirror.com/apk/netflix-inc/netflix/feed/",
-    "Google Drive": "https://www.apkmirror.com/apk/google-inc/google-drive/feed/",
-    "Google Photos": "https://www.apkmirror.com/apk/google-inc/google-photos/feed/",
-    "Google Calendar": "https://www.apkmirror.com/apk/google-inc/google-calendar/feed/",
-    "Google Docs": "https://www.apkmirror.com/apk/google-inc/google-docs/feed/",
-    "Google Sheets": "https://www.apkmirror.com/apk/google-inc/google-sheets/feed/",
-    "Google Slides": "https://www.apkmirror.com/apk/google-inc/google-slides/feed/",
-    "Google Keep": "https://www.apkmirror.com/apk/google-inc/google-keep-notes-and-lists/feed/",
-    "Google News": "https://www.apkmirror.com/apk/google-inc/google-news/feed/",
-    "Google Translate": "https://www.apkmirror.com/apk/google-inc/google-translate/feed/",
-    "Google Assistant": "https://www.apkmirror.com/apk/google-inc/google-assistant/feed/",
 }
 
 # --- Logging Setup ---
@@ -47,15 +44,43 @@ logger = logging.getLogger(__name__)
 seen_versions = {app: "" for app in APPS_TO_TRACK}
 
 # --- Bot Functions ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends an explanation of what the bot does."""
-    await update.message.reply_text("היי! אני בוט שעוקב אחר עדכונים לאפליקציות. אני אשלח הודעה בכל פעם שתצא גרסה חדשה.")
+    """Handles the /start command, registers the user."""
+    chat_id = update.message.chat_id
+    try:
+        # Add user to the database if they don't exist
+        user_collection.update_one({"chat_id": chat_id}, {"$set": {"chat_id": chat_id}}, upsert=True)
+        await update.message.reply_text("נרשמת בהצלחה! 🔔\nאני אשלח לך הודעה אישית בכל פעם שאמצא עדכון חדש.\nכדי לבטל את הרישום, השתמש בפקודה /stop.")
+        logger.info(f"User {chat_id} subscribed.")
+    except Exception as e:
+        logger.error(f"Failed to add user {chat_id} to DB: {e}")
+        await update.message.reply_text("אירעה שגיאה ברישום. נסה שוב מאוחר יותר.")
+
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the /stop command, unregisters the user."""
+    chat_id = update.message.chat_id
+    try:
+        result = user_collection.delete_one({"chat_id": chat_id})
+        if result.deleted_count > 0:
+            await update.message.reply_text("הרישום שלך בוטל. 🔕\nלא תקבל יותר עדכונים. כדי להירשם מחדש, השתמש בפקודה /start.")
+            logger.info(f"User {chat_id} unsubscribed.")
+        else:
+            await update.message.reply_text("לא היית רשום.")
+    except Exception as e:
+        logger.error(f"Failed to remove user {chat_id} from DB: {e}")
+        await update.message.reply_text("אירעה שגיאה בביטול הרישום.")
 
 async def check_for_updates(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Check for new app versions and send a notification."""
+    """Checks for new app versions and sends notifications to all subscribed users."""
     global seen_versions
-    job = context.job
     
+    # Get all subscribed users from the database
+    subscribers = list(user_collection.find({}, {"_id": 0, "chat_id": 1}))
+    if not subscribers:
+        logger.info("No subscribers to notify. Skipping check.")
+        return
+
     for app_name, rss_url in APPS_TO_TRACK.items():
         try:
             response = requests.get(rss_url, timeout=10)
@@ -66,21 +91,25 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE) -> None:
             if latest_item:
                 latest_version_title = latest_item.find("title").text
                 
-                # Simple check to see if the title changed
                 if seen_versions.get(app_name) != latest_version_title:
                     logger.info(f"New version found for {app_name}: {latest_version_title}")
-                    
-                    # Update cache first to prevent duplicate messages
                     seen_versions[app_name] = latest_version_title
                     
-                    # Construct and send message
                     link = latest_item.find("link").text
                     message = f"📢 **עדכון חדש זמין!**\n\n**אפליקציה:** {app_name}\n**גרסה:** {latest_version_title}\n\n[הורדה מאתר APKMirror]({link})"
-                    await context.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-                else:
-                    logger.info(f"No new version for {app_name}. Current is {latest_version_title}")
+                    
+                    # Send the message to all subscribers
+                    for user in subscribers:
+                        chat_id = user['chat_id']
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
+                        except Forbidden:
+                            logger.warning(f"User {chat_id} has blocked the bot. Removing from database.")
+                            user_collection.delete_one({"chat_id": chat_id})
+                        except Exception as e:
+                            logger.error(f"Failed to send message to {chat_id}: {e}")
             
-            time.sleep(2) # Be nice to the server
+            time.sleep(2)
 
         except requests.RequestException as e:
             logger.error(f"Could not fetch update for {app_name}: {e}")
@@ -89,20 +118,18 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def run_bot():
     """Starts the bot."""
-    # Create the Application and pass it your bot's token.
     application = Application.builder().token(TOKEN).build()
-    logger.info("Bot is starting...")
+    logger.info("Bot is starting in personal mode...")
 
-    # on different commands - answer in Telegram
+    # Add command handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop", stop))
 
     # Add job to the queue
-    application.job_queue.run_repeating(check_for_updates, interval=900, first=10) # 900 seconds = 15 minutes
+    application.job_queue.run_repeating(check_for_updates, interval=900, first=10)
 
-    # Run the bot until the user presses Ctrl-C
+    # Run the bot
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-    logger.info("Bot has started successfully.")
-
 
 if __name__ == "__main__":
     run_bot()
