@@ -1,6 +1,7 @@
-python-telegram-bot[job-queue]
+python-telegram-bot
+Flask
+gunicorn
+pymongo[srv]
 requests
 beautifulsoup4
 lxml
-Flask
-pymongo[srv]
