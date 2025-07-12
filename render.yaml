@@ -1,17 +1,14 @@
 services:
   - type: web
-    name: App-Update-Bot-Stable
+    name: App-Update-Bot-Final
     env: python
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn main:flask_app"
+    startCommand: "python main.py"
+    healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: BOT_TOKEN
         sync: false
       - key: MONGO_URI
-        sync: false
-      - key: RENDER_APP_URL # The full URL of your service, e.g., https://your-app.onrender.com
-        sync: false
-      - key: CRON_SECRET_KEY # A long random string you invent
         sync: false
