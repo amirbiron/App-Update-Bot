@@ -26,9 +26,18 @@ logger = logging.getLogger(__name__)
 # --- התחברות למסד הנתונים MongoDB ---
 MONGO_URI = os.getenv('MONGO_URI')
 if not MONGO_URI:
+    logger.error("MONGO_URI environment variable not set!")
     raise ValueError("MONGO_URI environment variable not set!")
 
-client = MongoClient(MONGO_URI)
+try:
+    client = MongoClient(MONGO_URI)
+    # Test the connection
+    client.admin.command('ping')
+    logger.info("Successfully connected to MongoDB")
+except Exception as e:
+    logger.error(f"Failed to connect to MongoDB: {e}")
+    raise
+
 db = client['app_bot_db']
 subscribers_collection = db['subscribers']
 
@@ -43,18 +52,26 @@ def get_all_subscribers() -> Set[int]:
         return set()
 
 def add_subscriber(chat_id: int) -> bool:
-    if subscribers_collection.find_one({'chat_id': chat_id}) is None:
-        subscribers_collection.insert_one({'chat_id': chat_id})
-        logger.info(f"New subscriber added to DB: {chat_id}")
-        return True
-    return False
+    try:
+        if subscribers_collection.find_one({'chat_id': chat_id}) is None:
+            subscribers_collection.insert_one({'chat_id': chat_id})
+            logger.info(f"New subscriber added to DB: {chat_id}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error adding subscriber {chat_id}: {e}")
+        return False
 
 def remove_subscriber(chat_id: int) -> bool:
-    result = subscribers_collection.delete_one({'chat_id': chat_id})
-    if result.deleted_count > 0:
-        logger.info(f"Subscriber removed from DB: {chat_id}")
-        return True
-    return False
+    try:
+        result = subscribers_collection.delete_one({'chat_id': chat_id})
+        if result.deleted_count > 0:
+            logger.info(f"Subscriber removed from DB: {chat_id}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error removing subscriber {chat_id}: {e}")
+        return False
 
 # --- פקודות הבוט שיפעילו המשתמשים ---
 
@@ -91,34 +108,64 @@ class AppUpdateMonitor:
     async def check_apps_and_notify(self):
         for app_name, rss_url in self.rss_feeds.items():
             try:
+                logger.debug(f"Checking {app_name} for updates...")
                 feed = feedparser.parse(rss_url)
-                if not feed.entries: continue
+                if not feed.entries:
+                    logger.debug(f"No entries found for {app_name}")
+                    continue
+                    
                 latest_entry = feed.entries[0]
                 current_version = self.extract_version(latest_entry.title)
                 last_version = self.last_updates.get(app_name, "none")
+                
                 if current_version != "Unknown" and current_version != last_version:
                     logger.info(f"New update found for {app_name}: {current_version}")
                     emoji = self.app_emojis.get(app_name, '📱')
                     message = f"🚨 {emoji} עדכון חדש באפליקציית {app_name}!\n\n📦 **{latest_entry.title}**\n🔢 גרסה: {current_version}\n\n🔗 [להורדה מ-APKMirror]({latest_entry.link})"
+                    
                     subscribers = get_all_subscribers()
+                    if not subscribers:
+                        logger.info("No subscribers to notify")
+                        continue
+                        
+                    success_count = 0
                     for chat_id in subscribers:
                         try:
-                            await self.bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', disable_web_page_preview=True)
+                            await self.bot.send_message(
+                                chat_id=chat_id, 
+                                text=message, 
+                                parse_mode='Markdown', 
+                                disable_web_page_preview=True
+                            )
+                            success_count += 1
                         except Forbidden:
                             logger.warning(f"User {chat_id} blocked the bot. Removing.")
                             remove_subscriber(chat_id)
                         except TelegramError as e:
                             logger.error(f"Failed to send message to {chat_id}: {e}")
+                    
+                    logger.info(f"Successfully notified {success_count}/{len(subscribers)} subscribers about {app_name} update")
                     self.last_updates[app_name] = current_version
+                else:
+                    logger.debug(f"No new update for {app_name} (current: {current_version}, last: {last_version})")
+                    
             except Exception as e:
                 logger.error(f"Error processing {app_name}: {e}")
+                continue
     
     async def run_check_loop(self):
-        await asyncio.sleep(10)
+        logger.info("Starting background update checker...")
+        await asyncio.sleep(10)  # Initial delay
+        
         while True:
-            await self.check_apps_and_notify()
-            logger.info("Background task: Check cycle complete. Sleeping for 1 hour.")
-            await asyncio.sleep(3600)
+            try:
+                await self.check_apps_and_notify()
+                logger.info("Background task: Check cycle complete. Sleeping for 1 hour.")
+                await asyncio.sleep(3600)
+            except Exception as e:
+                logger.error(f"Error in background check loop: {e}")
+                logger.info("Retrying in 5 minutes...")
+                await asyncio.sleep(300)  # Wait 5 minutes before retrying
 
 # --- הפונקציה הראשית שמחברת הכל ---
 async def main():
@@ -128,31 +175,41 @@ async def main():
         logger.error("Missing BOT_TOKEN environment variable")
         return
 
-    application = ApplicationBuilder().token(bot_token).build()
-    
-    application.add_handler(CommandHandler('start', start_command))
-    application.add_handler(CommandHandler('subscribe', start_command))
-    application.add_handler(CommandHandler('unsubscribe', unsubscribe_command))
+    try:
+        application = ApplicationBuilder().token(bot_token).build()
+        
+        application.add_handler(CommandHandler('start', start_command))
+        application.add_handler(CommandHandler('subscribe', start_command))
+        application.add_handler(CommandHandler('unsubscribe', unsubscribe_command))
 
-    # --- הדרך הנכונה לניהול מחזור החיים של האפליקציה ---
-    # שימוש ב-async with מבטיח ש-initialize ו-shutdown יופעלו כראוי
-    async with application:
-        await application.initialize()  # אתחול הבוט
-        await application.updater.start_polling()  # התחלת האזנה להודעות
-        
-        # יצירה והרצה של משימת הרקע לבדיקת עדכונים
-        monitor = AppUpdateMonitor(application.bot)
-        # שימוש ב-create_task כדי שהלולאה תרוץ ברקע ולא תחסום
-        application.create_task(monitor.run_check_loop(), name="UpdateChecker")
-        
-        # לולאה אינסופית שמחזיקה את התוכנית הראשית בחיים
-        # עד לקבלת אות עצירה (כמו Ctrl+C)
-        while True:
-            await asyncio.sleep(3600)
+        # --- הדרך הנכונה לניהול מחזור החיים של האפליקציה ---
+        # שימוש ב-async with מבטיח ש-initialize ו-shutdown יופעלו כראוי
+        async with application:
+            await application.initialize()  # אתחול הבוט
+            await application.updater.start_polling()  # התחלת האזנה להודעות
+            
+            # יצירה והרצה של משימת הרקע לבדיקת עדכונים
+            monitor = AppUpdateMonitor(application.bot)
+            # שימוש ב-create_task כדי שהלולאה תרוץ ברקע ולא תחסום
+            application.create_task(monitor.run_check_loop(), name="UpdateChecker")
+            
+            logger.info("Bot started successfully! Monitoring for app updates...")
+            
+            # לולאה אינסופית שמחזיקה את התוכנית הראשית בחיים
+            # עד לקבלת אות עצירה (כמו Ctrl+C)
+            while True:
+                await asyncio.sleep(3600)
+                
+    except Exception as e:
+        logger.error(f"Error in main function: {e}")
+        raise
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped gracefully")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise
 
