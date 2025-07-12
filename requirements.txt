@@ -1,11 +1,5 @@
-feedparser==6.0.11
-requests==2.31.0
-python-dateutil==2.8.2
-flask==3.0.0
-python-telegram-bot==20.7
-fastapi==0.112.2
-uvicorn==0.30.6
-nest_asyncio==1.6.0
-pymongo==4.8.0
-dnspython==2.6.1
-certifi==2024.7.4
+python-telegram-bot
+requests
+beautifulsoup4
+lxml
+Flask
