@@ -3,7 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import os
-import asyncio # <-- Import asyncio
+import asyncio
 from telegram import Update
 from telegram.error import Forbidden
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -102,7 +102,6 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def run_bot():
     """Starts the bot."""
-    # Create and set a new event loop for this thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -111,7 +110,10 @@ def run_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop))
     application.job_queue.run_repeating(check_for_updates, interval=900, first=10)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Run the bot, but disable the problematic signal handlers
+    application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
 
 if __name__ == "__main__":
     run_bot()
+
