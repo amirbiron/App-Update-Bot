@@ -6,6 +6,8 @@ from telegram import Update
 from pymongo import MongoClient
 import certifi
 import os
+import os
+print("PAT:", os.getenv("GITHUB_TOKEN"))  # הסר לאחר בדיקה
 
 nest_asyncio.apply()
 app = FastAPI()
