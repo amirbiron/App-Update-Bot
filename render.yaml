@@ -1,16 +1,17 @@
 services:
   - type: web
-    name: telegram-app-monitor
+    name: App-Update-Bot
     env: python
-    region: oregon
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    # פקודת ההתקנה נשארת זהה
+    buildCommand: "pip install -r requirements.txt"
+    # פקודת ההרצה משתנה כדי להפעיל את הסקריפט המשולב שלנו
+    startCommand: "python app.py"
+    # אומרים ל-Render באיזו כתובת לבדוק אם השירות חי
+    healthCheckPath: /
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: MONGO_URI
-        sync: false
       - key: CHAT_ID
         sync: false
-    autoDeploy: true
+      - key: PYTHON_VERSION
+        value: 3.10.6
