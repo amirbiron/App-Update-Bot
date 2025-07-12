@@ -1,254 +1,65 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Telegram Bot for monitoring app updates with a MongoDB subscription system.
-Final version using the robust async context manager for application lifecycle.
-"""
-
-import os
+```python
 import asyncio
-import logging
-from typing import Dict, Optional, Set
-
-import feedparser
-from telegram import Bot
-from telegram.error import TelegramError, Forbidden
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import nest_asyncio
+from fastapi import FastAPI
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram import Update
 from pymongo import MongoClient
+import certifi
+import os
 
-# --- הגדרות בסיסיות ולוגינג ---
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Apply nest_asyncio for Render compatibility
+nest_asyncio.apply()
 
-# --- התחברות למסד הנתונים MongoDB ---
-MONGO_URI = os.getenv('MONGO_URI')
-if not MONGO_URI:
-    logger.error("MONGO_URI environment variable not set!")
-    raise ValueError("MONGO_URI environment variable not set!")
+# Initialize FastAPI for Render health checks
+app = FastAPI()
 
-def create_mongodb_client():
-    """יצירת חיבור MongoDB עם הגדרות SSL מתאימות ל-Atlas"""
-    try:
-        # Configure MongoDB client with proper SSL settings for Atlas
-        client = MongoClient(
-            MONGO_URI,
-            ssl=True,
-            ssl_cert_reqs='CERT_NONE',  # For Atlas connections
-            serverSelectionTimeoutMS=30000,
-            connectTimeoutMS=30000,
-            socketTimeoutMS=30000,
-            maxPoolSize=10,
-            retryWrites=True,
-            retryReads=True,
-            tlsAllowInvalidCertificates=True,  # Additional SSL flexibility
-            tlsAllowInvalidHostnames=True      # Additional SSL flexibility
-        )
-        # Test the connection
-        client.admin.command('ping')
-        logger.info("Successfully connected to MongoDB")
-        return client
-    except Exception as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
-        # Try alternative connection method
-        try:
-            logger.info("Trying alternative connection method...")
-            client = MongoClient(
-                MONGO_URI,
-                serverSelectionTimeoutMS=30000,
-                connectTimeoutMS=30000,
-                socketTimeoutMS=30000,
-                maxPoolSize=10,
-                retryWrites=True,
-                retryReads=True
-            )
-            client.admin.command('ping')
-            logger.info("Successfully connected to MongoDB with alternative method")
-            return client
-        except Exception as e2:
-            logger.error(f"Alternative connection method also failed: {e2}")
-            raise
+# Get environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Set in Render environment variables
+MONGO_URI = os.getenv("MONGO_URI")  # Set in Render environment variables
 
+# MongoDB Connection
 try:
-    client = create_mongodb_client()
+    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=30000)
+    db = client["muminAI"]  # Replace with your database name
+    # Test connection
+    client.admin.command("ping")
+    print("MongoDB connection successful!")
 except Exception as e:
-    logger.error(f"All MongoDB connection attempts failed: {e}")
-    raise
+    print(f"MongoDB connection failed: {e}")
 
-db = client['app_bot_db']
-subscribers_collection = db['subscribers']
+# Define command handlers
+async def start(update: Update, context):
+    await update.message.reply_text("Hello! I'm your App Update Bot. Try /help for more commands.")
 
-# --- פונקציות לניהול מנויים ---
+async def help_command(update: Update, context):
+    await update.message.reply_text("Available commands:\n/start - Start the bot\n/help - Show this message")
 
-def get_all_subscribers() -> Set[int]:
-    try:
-        cursor = subscribers_collection.find({}, {'chat_id': 1, '_id': 0})
-        return {item['chat_id'] for item in cursor}
-    except Exception as e:
-        logger.error(f"Error reading from MongoDB: {e}")
-        return set()
+async def echo(update: Update, context):
+    await update.message.reply_text(f"You said: {update.message.text}")
 
-def add_subscriber(chat_id: int) -> bool:
-    try:
-        if subscribers_collection.find_one({'chat_id': chat_id}) is None:
-            subscribers_collection.insert_one({'chat_id': chat_id})
-            logger.info(f"New subscriber added to DB: {chat_id}")
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Error adding subscriber {chat_id}: {e}")
-        return False
+# FastAPI routes for Render
+@app.get("/")
+async def root():
+    return {"status": "ok"}
 
-def remove_subscriber(chat_id: int) -> bool:
-    try:
-        result = subscribers_collection.delete_one({'chat_id': chat_id})
-        if result.deleted_count > 0:
-            logger.info(f"Subscriber removed from DB: {chat_id}")
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Error removing subscriber {chat_id}: {e}")
-        return False
+@app.head("/")
+async def head():
+    return {}
 
-# --- פקודות הבוט שיפעילו המשתמשים ---
-
-async def start_command(update, context: ContextTypes.DEFAULT_TYPE):
-    if add_subscriber(update.message.chat_id):
-        await update.message.reply_text("✅ נרשמת בהצלחה לקבלת עדכונים!")
-    else:
-        await update.message.reply_text("🤔 אתה כבר רשום לקבלת עדכונים.")
-
-async def unsubscribe_command(update, context: ContextTypes.DEFAULT_TYPE):
-    if remove_subscriber(update.message.chat_id):
-        await update.message.reply_text("🗑️ הסרנו אותך מרשימת התפוצה.")
-    else:
-        await update.message.reply_text("🤔 לא היית רשום מלכתחילה.")
-
-# --- לוגיקת מעקב העדכונים ---
-
-class AppUpdateMonitor:
-    def __init__(self, bot: Bot):
-        self.bot = bot
-        self.last_updates = {}
-        self.rss_feeds = {
-            'WhatsApp': 'https://www.apkmirror.com/apk/whatsapp-inc/whatsapp/feed/',
-            'Telegram': 'https://www.apkmirror.com/apk/telegram-fz-llc/telegram/feed/',
-            'Instagram': 'https://www.apkmirror.com/apk/instagram/instagram-instagram/feed/'
-        }
-        self.app_emojis = {'WhatsApp': '💬', 'Telegram': '✈️', 'Instagram': '📸'}
-
-    def extract_version(self, title: str) -> str:
-        import re
-        version_match = re.search(r'(\d+\.\d+\.\d+(?:\.\d+)?)', title)
-        return version_match.group(1) if version_match else "Unknown"
-
-    async def check_apps_and_notify(self):
-        for app_name, rss_url in self.rss_feeds.items():
-            try:
-                logger.debug(f"Checking {app_name} for updates...")
-                feed = feedparser.parse(rss_url)
-                if not feed.entries:
-                    logger.debug(f"No entries found for {app_name}")
-                    continue
-                    
-                latest_entry = feed.entries[0]
-                current_version = self.extract_version(latest_entry.title)
-                last_version = self.last_updates.get(app_name, "none")
-                
-                if current_version != "Unknown" and current_version != last_version:
-                    logger.info(f"New update found for {app_name}: {current_version}")
-                    emoji = self.app_emojis.get(app_name, '📱')
-                    message = f"🚨 {emoji} עדכון חדש באפליקציית {app_name}!\n\n📦 **{latest_entry.title}**\n🔢 גרסה: {current_version}\n\n🔗 [להורדה מ-APKMirror]({latest_entry.link})"
-                    
-                    subscribers = get_all_subscribers()
-                    if not subscribers:
-                        logger.info("No subscribers to notify")
-                        continue
-                        
-                    success_count = 0
-                    for chat_id in subscribers:
-                        try:
-                            await self.bot.send_message(
-                                chat_id=chat_id, 
-                                text=message, 
-                                parse_mode='Markdown', 
-                                disable_web_page_preview=True
-                            )
-                            success_count += 1
-                        except Forbidden:
-                            logger.warning(f"User {chat_id} blocked the bot. Removing.")
-                            remove_subscriber(chat_id)
-                        except TelegramError as e:
-                            logger.error(f"Failed to send message to {chat_id}: {e}")
-                    
-                    logger.info(f"Successfully notified {success_count}/{len(subscribers)} subscribers about {app_name} update")
-                    self.last_updates[app_name] = current_version
-                else:
-                    logger.debug(f"No new update for {app_name} (current: {current_version}, last: {last_version})")
-                    
-            except Exception as e:
-                logger.error(f"Error processing {app_name}: {e}")
-                continue
-    
-    async def run_check_loop(self):
-        logger.info("Starting background update checker...")
-        await asyncio.sleep(10)  # Initial delay
-        
-        while True:
-            try:
-                await self.check_apps_and_notify()
-                logger.info("Background task: Check cycle complete. Sleeping for 1 hour.")
-                await asyncio.sleep(3600)
-            except Exception as e:
-                logger.error(f"Error in background check loop: {e}")
-                logger.info("Retrying in 5 minutes...")
-                await asyncio.sleep(300)  # Wait 5 minutes before retrying
-
-# --- הפונקציה הראשית שמחברת הכל ---
+# Main function to run the bot
 async def main():
-    """הפונקציה הראשית שמאתחלת ומריצה את הבוט"""
-    bot_token = os.getenv('BOT_TOKEN')
-    if not bot_token:
-        logger.error("Missing BOT_TOKEN environment variable")
-        return
+    # Initialize the bot application
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    try:
-        application = ApplicationBuilder().token(bot_token).build()
-        
-        application.add_handler(CommandHandler('start', start_command))
-        application.add_handler(CommandHandler('subscribe', start_command))
-        application.add_handler(CommandHandler('unsubscribe', unsubscribe_command))
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-        # --- הדרך הנכונה לניהול מחזור החיים של האפליקציה ---
-        # שימוש ב-async with מבטיח ש-initialize ו-shutdown יופעלו כראוי
-        async with application:
-            await application.initialize()  # אתחול הבוט
-            await application.updater.start_polling()  # התחלת האזנה להודעות
-            
-            # יצירה והרצה של משימת הרקע לבדיקת עדכונים
-            monitor = AppUpdateMonitor(application.bot)
-            # שימוש ב-create_task כדי שהלולאה תרוץ ברקע ולא תחסום
-            application.create_task(monitor.run_check_loop(), name="UpdateChecker")
-            
-            logger.info("Bot started successfully! Monitoring for app updates...")
-            
-            # לולאה אינסופית שמחזיקה את התוכנית הראשית בחיים
-            # עד לקבלת אות עצירה (כמו Ctrl+C)
-            while True:
-                await asyncio.sleep(3600)
-                
-    except Exception as e:
-        logger.error(f"Error in main function: {e}")
-        raise
+    # Run the bot with polling
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped gracefully")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        raise
-
+    asyncio.run(main())
+```
