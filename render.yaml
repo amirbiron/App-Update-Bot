@@ -1,17 +1,17 @@
 services:
   - type: web
-    name: App-Update-Bot
+    name: App-Update-Bot-Stable
     env: python
-    # פקודת ההתקנה נשארת זהה
     buildCommand: "pip install -r requirements.txt"
-    # פקודת ההרצה משתנה כדי להפעיל את הסקריפט המשולב שלנו
-    startCommand: "python app.py"
-    # אומרים ל-Render באיזו כתובת לבדוק אם השירות חי
-    healthCheckPath: /
+    startCommand: "gunicorn main:flask_app"
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: BOT_TOKEN
         sync: false
-      - key: CHAT_ID
+      - key: MONGO_URI
         sync: false
-      - key: PYTHON_VERSION
-        value: 3.10.6
+      - key: RENDER_APP_URL # The full URL of your service, e.g., https://your-app.onrender.com
+        sync: false
+      - key: CRON_SECRET_KEY # A long random string you invent
+        sync: false
