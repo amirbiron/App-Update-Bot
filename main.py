@@ -8,6 +8,13 @@ from telegram.error import Forbidden
 from telegram.ext import Application, CommandHandler, ContextTypes
 import pymongo
 
+# --- Logging Setup (MOVED TO THE TOP) ---
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
 # --- Configuration ---
 TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
@@ -25,20 +32,12 @@ except Exception as e:
     # Exit if we can't connect to the DB, as the bot is useless without it
     exit()
 
-
 APPS_TO_TRACK = {
     "WhatsApp": "https://www.apkmirror.com/apk/whatsapp-inc/whatsapp/feed/",
     "Telegram": "https://www.apkmirror.com/apk/telegram-fz-llc/telegram/feed/",
     # ... add all your other apps here ...
     "Instagram": "https://www.apkmirror.com/apk/instagram/instagram/feed/",
 }
-
-# --- Logging Setup ---
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
 
 # --- In-memory cache for seen versions ---
 seen_versions = {app: "" for app in APPS_TO_TRACK}
@@ -133,4 +132,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
