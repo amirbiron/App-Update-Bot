@@ -97,7 +97,24 @@ telegram-app-monitor/
 └── README.md           # 📖 התיעוד הזה
 ```
 
-## 🛠️ פיתוח מקומי
+## � תיקונים אחרונים
+
+### שיפורים שבוצעו:
+- ✅ **תיקון שם קובץ** - `.gitignore` במקום `gitignore.`
+- ✅ **הוספת MONGO_URI** ל-`render.yaml` - נדרש לפעולת הבוט
+- ✅ **שיפור טיפול בשגיאות** - הוספת try-catch blocks בכל הפונקציות
+- ✅ **בדיקת חיבור MongoDB** - וידוא שהחיבור עובד לפני הפעלת הבוט
+- ✅ **שיפור לוגים** - הוספת הודעות debug ו-info מפורטות יותר
+- ✅ **טיפול טוב יותר בשגיאות רקע** - retry mechanism בלולאת הבדיקות
+- ✅ **הוספת health check endpoint** - לבדיקת תקינות השירות
+- ✅ **שיפור startup script** - בדיקת dependencies ו-environment variables
+- ✅ **הוספת בדיקות MongoDB** לקובץ test.py
+
+### קבצים חדשים שנוספו:
+- `app.py` - שילוב של Flask health check ו-Telegram bot
+- `startup.py` - script לבדיקת סביבה לפני הפעלת הבוט
+
+## �🛠️ פיתוח מקומי
 
 אם תרצה לבדוק את הבוט במחשב שלך לפני העלאה לענן:
 

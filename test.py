@@ -53,6 +53,7 @@ async def test_telegram_bot():
     
     if BOT_TOKEN == "your_bot_token_here" or CHAT_ID == "your_chat_id_here":
         print("  ❌ אנא החלף את BOT_TOKEN ו-CHAT_ID בערכים האמיתיים")
+        print("  💡 השתמש במשתני סביבה או עדכן את הקוד ישירות")
         return
     
     try:
@@ -71,6 +72,7 @@ async def test_telegram_bot():
         
     except Exception as e:
         print(f"  ❌ שגיאה בחיבור לטלגרם: {e}")
+        print(f"  💡 ודא שהבוט טוקן נכון ושהצ'אט ID תקין")
 
 def test_version_extraction():
     """בדיקת חילוץ גרסאות"""
@@ -92,17 +94,56 @@ def test_version_extraction():
         else:
             print(f"  ❌ {title} -> לא נמצאה גרסה")
 
+def test_mongodb_connection():
+    """בדיקת חיבור למסד הנתונים MongoDB"""
+    print("\n🗄️ בודק חיבור למסד הנתונים MongoDB...")
+    
+    mongo_uri = os.getenv('MONGO_URI')
+    if not mongo_uri:
+        print("  ❌ MONGO_URI לא מוגדר")
+        print("  💡 הגדר את משתנה הסביבה MONGO_URI")
+        return
+    
+    try:
+        from pymongo import MongoClient
+        
+        client = MongoClient(mongo_uri)
+        # Test the connection
+        client.admin.command('ping')
+        print("  ✅ חיבור למסד הנתונים הצליח!")
+        
+        # Test database operations
+        db = client['app_bot_db']
+        subscribers_collection = db['subscribers']
+        
+        # Test insert and find
+        test_chat_id = 123456789
+        subscribers_collection.insert_one({'chat_id': test_chat_id})
+        result = subscribers_collection.find_one({'chat_id': test_chat_id})
+        if result:
+            print("  ✅ פעולות מסד הנתונים עובדות!")
+            # Clean up test data
+            subscribers_collection.delete_one({'chat_id': test_chat_id})
+        
+        client.close()
+        
+    except Exception as e:
+        print(f"  ❌ שגיאה בחיבור למסד הנתונים: {e}")
+
 def show_env_setup():
     """הצגת הוראות הגדרת משתני סביבה"""
     print("\n⚙️ הגדרת משתני סביבה:")
     print("\n# Linux/Mac:")
     print("export BOT_TOKEN='your_actual_bot_token'")
+    print("export MONGO_URI='your_mongodb_connection_string'")
     print("export CHAT_ID='your_actual_chat_id'")
     print("\n# Windows:")
     print("set BOT_TOKEN=your_actual_bot_token")
+    print("set MONGO_URI=your_mongodb_connection_string")
     print("set CHAT_ID=your_actual_chat_id")
     print("\n# או ב-PowerShell:")
     print("$env:BOT_TOKEN='your_actual_bot_token'")
+    print("$env:MONGO_URI='your_mongodb_connection_string'")
     print("$env:CHAT_ID='your_actual_chat_id'")
 
 async def main():
@@ -115,6 +156,9 @@ async def main():
     
     # בדיקת חילוץ גרסאות
     test_version_extraction()
+    
+    # בדיקת מסד הנתונים
+    test_mongodb_connection()
     
     # בדיקת טלגרם
     await test_telegram_bot()
