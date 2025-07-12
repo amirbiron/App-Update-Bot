@@ -20,27 +20,37 @@ logger = logging.getLogger(__name__)
 # --- Configuration & Constants ---
 TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
+
+# **NEW**: Enhanced headers to better simulate a real browser
 REQUEST_HEADER = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
 }
 APPS_PER_PAGE = 8
 
-# --- App Database ---
+# --- App Database (Updated & Corrected Links) ---
 APPS_TO_TRACK = {
+    # Messengers
     "WhatsApp": {"rss": "https://www.apkmirror.com/apk/whatsapp-inc/whatsapp/feed/", "package": "com.whatsapp"},
     "Telegram": {"rss": "https://www.apkmirror.com/apk/telegram-fz-llc/telegram/feed/", "package": "org.telegram.messenger"},
     "Signal": {"rss": "https://www.apkmirror.com/apk/signal-foundation/signal-private-messenger/feed/", "package": "org.thoughtcrime.securesms"},
+    # AI Apps
     "Gemini": {"rss": "https://www.apkmirror.com/apk/google-inc/google-gemini/feed/", "package": "com.google.android.apps.bard"},
     "Claude": {"rss": "https://www.apkmirror.com/apk/anthropic/claude/feed/", "package": "com.anthropic.claude"},
-    "Perplexity": {"rss": "https://www.apkmirror.com/apk/perplexity-ai/perplexity-ask-ai/feed/", "package": "ai.perplexity.app"},
     "ChatGPT": {"rss": "https://www.apkmirror.com/apk/openai/chatgpt/feed/", "package": "com.openai.chatgpt"},
+    # Social Media
     "Instagram": {"rss": "https://www.apkmirror.com/apk/instagram/instagram/feed/", "package": "com.instagram.android"},
-    "X (Twitter)": {"rss": "https://www.apkmirror.com/apk/twitter-inc/x/feed/", "package": "com.twitter.android"},
+    "X (Twitter)": {"rss": "https://www.apkmirror.com/apk/twitter-inc/twitter/feed/", "package": "com.twitter.android"}, # Corrected Link
     "Reddit": {"rss": "https://www.apkmirror.com/apk/reddit-inc/reddit/feed/", "package": "com.reddit.frontpage"},
+    # Browsers
     "Google Chrome": {"rss": "https://www.apkmirror.com/apk/google-inc/chrome/feed/", "package": "com.android.chrome"},
+    # Productivity & Utilities
     "Google Drive": {"rss": "https://www.apkmirror.com/apk/google-inc/google-drive/feed/", "package": "com.google.android.apps.docs"},
     "Google Photos": {"rss": "https://www.apkmirror.com/apk/google-inc/google-photos/feed/", "package": "com.google.android.apps.photos"},
-    "Google Keep": {"rss": "https://www.apkmirror.com/apk/google-inc/google-keep-notes-and-lists/feed/", "package": "com.google.android.keep"},
+    "Google Keep": {"rss": "https://www.apkmirror.com/apk/google-inc/keep/feed/", "package": "com.google.android.keep"}, # Corrected Link
     "Waze": {"rss": "https://www.apkmirror.com/apk/waze/waze-gps-maps-traffic-alerts-live-navigation/feed/", "package": "com.waze"},
     "Notion": {"rss": "https://www.apkmirror.com/apk/notion-labs-inc/notion-notes-docs-tasks/feed/", "package": "notion.id"},
     "Slack": {"rss": "https://www.apkmirror.com/apk/slack-technologies-inc/slack/feed/", "package": "com.Slack"},
@@ -50,6 +60,7 @@ APPS_TO_TRACK = {
 SORTED_APPS = sorted(APPS_TO_TRACK.keys())
 
 # --- Database Setup ---
+# (The rest of the code is identical to the previous version)
 try:
     client = pymongo.MongoClient(MONGO_URI)
     db = client.get_database("AppUpdateBotDB")
@@ -60,10 +71,8 @@ except Exception as e:
     logger.error(f"Could not connect to MongoDB: {e}")
     exit()
 
-# --- In-memory cache ---
 seen_versions = {app: "" for app in APPS_TO_TRACK}
 
-# --- UI Components ---
 def build_app_menu(chat_id, page):
     user_subs = user_collection.find_one({"chat_id": chat_id}, {"subscribed_apps": 1, "_id": 0})
     subscribed_apps = set(user_subs.get("subscribed_apps", []))
@@ -85,7 +94,6 @@ def build_app_menu(chat_id, page):
         buttons.append(nav_buttons)
     return InlineKeyboardMarkup(buttons)
 
-# --- Command & Callback Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     user_collection.update_one({"chat_id": chat_id}, {"$setOnInsert": {"chat_id": chat_id, "subscribed_apps": []}}, upsert=True)
@@ -125,10 +133,8 @@ async def toggle_subscription_callback(update: Update, context: ContextTypes.DEF
         pass
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-# --- Background Job ---
 async def check_for_updates(context: ContextTypes.DEFAULT_TYPE) -> None:
     global seen_versions
     for app_name, app_data in APPS_TO_TRACK.items():
@@ -168,26 +174,17 @@ async def check_for_updates(context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.error(f"Error checking {app_name}: {e}")
 
-# --- Main Bot Runner ---
 def run_bot():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     application = Application.builder().token(TOKEN).build()
-    
-    # Add the error handler first
     application.add_error_handler(error_handler)
-    
-    # Add other handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(navigation_callback, pattern="^nav:"))
     application.add_handler(CallbackQueryHandler(toggle_subscription_callback, pattern="^(add|remove):"))
-    
     application.job_queue.run_repeating(check_for_updates, interval=900, first=10)
-    
-    logger.info("Bot starting with final features and error handler...")
+    logger.info("Bot starting with enhanced headers and corrected links...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None)
 
 if __name__ == "__main__":
     run_bot()
-
