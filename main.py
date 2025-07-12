@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
 SECRET_KEY = os.environ.get("CRON_SECRET_KEY")
-APP_URL = os.environ.get("RENDER_APP_URL") # e.g., https://your-app-name.onrender.com
+APP_URL = os.environ.get("RENDER_APP_URL")
 
 if not all([TOKEN, MONGO_URI, SECRET_KEY, APP_URL]):
     logger.error("FATAL: Missing one or more environment variables!")
@@ -49,6 +49,7 @@ seen_versions = {app: "" for app in APPS_TO_TRACK}
 
 ptb_app = Application.builder().token(TOKEN).build()
 flask_app = Flask(__name__)
+main_loop = None # Will hold the running asyncio event loop
 
 # --- UI & Bot Logic Functions ---
 def build_app_menu(chat_id, page):
@@ -73,7 +74,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_collection.update_one({"chat_id": chat_id}, {"$setOnInsert": {"chat_id": chat_id, "subscribed_apps": []}}, upsert=True)
     await update.message.reply_text(
-        "**ברוך הבא לבוט עדכוני האפליקציות!** 🤖\n\nלחץ על הכפתור כדי לנהל את רשימת ההתראות שלך:",
+        "**ברוך הבא לבוט עדכוני האפליקציות!** 🤖\n\n"
+        "לחץ על הכפתור כדי לנהל את רשימת ההתראות שלך:",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📱 ניהול התראות", callback_data="nav:0")]])
     )
 
@@ -106,18 +108,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def check_for_updates(app: Application):
     global seen_versions
     logger.info("Running scheduled update check...")
-    for app_name, app_data in APPS_TO_TRACK.items():
-        # (Full logic for checking updates and sending messages goes here)
-        pass # Make sure to paste the full function from the previous version
+    # (Full logic for checking updates and sending messages goes here)
+    pass
 
-# --- Flask Endpoints for Webhook and Cron ---
+# --- Flask Endpoints ---
 @flask_app.route(f"/{TOKEN}", methods=["POST"])
 def respond():
-    try:
-        update = Update.de_json(request.get_json(force=True), ptb_app.bot)
-        ptb_app.update_queue.put(update)
-    except Exception as e:
-        logger.error(f"Error processing update: {e}")
+    """Endpoint to receive updates from Telegram."""
+    if main_loop:
+        try:
+            update = Update.de_json(request.get_json(force=True), ptb_app.bot)
+            # Submit the coroutine to the running event loop from the sync thread
+            asyncio.run_coroutine_threadsafe(ptb_app.update_queue.put(update), main_loop)
+        except Exception as e:
+            logger.error(f"Error processing update: {e}")
     return "ok"
 
 @flask_app.route("/trigger-update-check")
@@ -127,34 +131,22 @@ def trigger_update_check():
         return "Update check triggered."
     return "Unauthorized", 401
 
-# --- Setup a running asyncio loop and initialize the bot ---
+# --- PTB Setup ---
 async def main_setup():
     """Initializes the bot and sets the webhook."""
     await ptb_app.initialize()
-    await ptb_app.updater.start_polling() # This is a trick to start the dispatcher without blocking
-    await ptb_app.updater.stop()
-
     webhook_url = f"{APP_URL}/{TOKEN}"
-    await ptb_app.bot.set_webhook(
-        url=webhook_url,
-        allowed_updates=Update.ALL_TYPES
-    )
+    await ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
     logger.info(f"Webhook set to {webhook_url}")
-    
-    # Start the dispatcher in the background
+    # The dispatcher runs in the background, processing updates from the queue
     asyncio.create_task(ptb_app.start())
 
-# --- PTB Handlers ---
 ptb_app.add_error_handler(error_handler)
 ptb_app.add_handler(CommandHandler("start", start_command))
 ptb_app.add_handler(CallbackQueryHandler(navigation_callback, pattern="^nav:"))
 ptb_app.add_handler(CallbackQueryHandler(toggle_subscription_callback, pattern="^(add|remove):"))
 
-# --- Run the setup and then the Flask app ---
+# --- Run Setup when Gunicorn starts ---
 if __name__ != "__main__":
-    # This block runs when Gunicorn starts the app
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        loop.create_task(main_setup())
-    else:
-        asyncio.run(main_setup())
+    main_loop = asyncio.get_event_loop()
+    main_loop.create_task(main_setup())
